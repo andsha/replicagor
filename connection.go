@@ -2,83 +2,73 @@
 package main
 
 import (
+	//	"bytes"
 	"errors"
 	"fmt"
 
-	"github.com/andsha/postgresutils"
 	"github.com/andsha/vconfig"
+)
+
+const (
+	DEST   = 1002
+	SOURCE = 1003
 )
 
 //connection interface
 type connection interface {
+	//implemented by both source and destination
 	connect() error
 	disconnect() error
+
+	// implemented by source only
+	getSourceInfo([]string) ([]schema, error)
+	startDump() (<-chan interface{}, error)
+
+	//implemented by destination only
+	playEvent(e interface{}) error
 }
 
 //generic connection data structure
 type conn struct {
-	// parent of each connection is kept here
-	rep *replicagor
+	rep      *replicagor // parent
+	connType int         // type of connection
 }
 
 // Create conection object
-func NewConnection(sec *vconfig.Section, r *replicagor) (connection, error) {
-	hostName, err := sec.GetSingleValue("host", "")
-	if err != nil {
-		return nil, err
+func NewConnection(t int, cfg *vconfig.VConfig) (connection, error) {
+	var cType string
+	if t == SOURCE {
+		cType = "source"
+	} else if t == DEST {
+		cType = "destination"
+	} else {
+		return nil, errors.New("Cannot recognise type of connection. Must be SOURCE or DEST")
 	}
-	hostSections, err := r.config.GetSectionsByVar("host", "name", hostName)
-	if err != nil {
-		return nil, err
-	}
-	hostType, err := hostSections[0].GetSingleValue("type", "")
+
+	hostType, err := cfg.GetSingleValue(cType, "host", "")
 	if err != nil {
 		return nil, err
 	}
 
 	switch hostType {
 	case "postgres":
-		c := new(postgres)
+		c, err := NewPgConnection(t, cfg)
+		if err != nil {
+			return nil, err
+		}
+
 		return c, nil
 	case "mysql":
-		c := new(mysql)
+		// create MySQL connection
+		c, err := NewMysqlConnection(t, cfg)
+		if err != nil {
+			return nil, err
+		}
+
 		return c, nil
+
 	default:
 		return nil, errors.New(fmt.Sprintf("Cannot resolve connection type: %v", hostType))
 	}
 
-}
-
-// ************ connection implementation for postgres *******************
-// subclass of connection
-type postgres struct {
-	conn
-	pgprocess *postgresutils.PostgresProcess
-}
-
-func (*postgres) connect() error {
-	fmt.Println("connect to PSQL")
-	return nil
-}
-
-func (*postgres) disconnect() error {
-	fmt.Println("disconnect from PSQL")
-	return nil
-}
-
-// ************ connection implementation for mysql *******************
-//subclass of connection
-type mysql struct {
-	conn
-	mysqlprocess int
-}
-
-func (*mysql) connect() error {
-	fmt.Println("connect to MySQL")
-	return nil
-}
-
-func (*mysql) disconnect() error {
-	fmt.Println("disconnect from MySQL")
-	return nil
 }
