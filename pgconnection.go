@@ -6,84 +6,104 @@ import (
 	"fmt"
 
 	"github.com/andsha/postgresutils"
+	"github.com/andsha/replicagor/structs"
 	"github.com/andsha/vconfig"
 )
 
 // extends conn
 type pgConnection struct {
-	conn
-	config  *vconfig.VConfig
+	*conn
 	process *postgresutils.PostgresProcess
 }
 
-func NewPgConnection(t int, cfg *vconfig.VConfig) (*pgConnection, error) {
-	c := new(pgConnection)
-	c.config = cfg
-	c.connType = t
-	c.process = new(postgresutils.PostgresProcess)
-	return c, nil
-}
-
-func (c *pgConnection) connect() error {
-	var t string
-	if c.connType == SOURCE {
-		t = "source"
-	} else {
-		t = "destination"
-	}
-
-	hostType, err := c.config.GetSingleValue(t, "host", "")
-	if err != nil {
-		return err
-	}
-
-	mysqlHostSections, err := c.config.GetSectionsByVar("host", "type", hostType)
-	if err != nil {
-		return err
-	}
-
-	// get params for mysql connection
-	host, err := mysqlHostSections[0].GetSingleValue("host", "")
-	if err != nil {
-		return err
-	}
-
-	port, err := mysqlHostSections[0].GetSingleValue("port", "")
-	if err != nil {
-		return err
-	}
-
-	dbname, err := mysqlHostSections[0].GetSingleValue("dbname", "")
-	if err != nil {
-		return err
-	}
-
-	user, err := mysqlHostSections[0].GetSingleValue("user", "")
-	if err != nil {
-		return err
-	}
-
-	password, err := mysqlHostSections[0].GetSingleValue("password", "")
-	if err != nil {
-		return err
-	}
-
-	pwdSections, err := c.config.GetSections("SECURE PASSWORD")
-	if err != nil {
-		return err
-	}
+func NewPgConnection(c *conn) (*pgConnection, error) {
+	pgc := new(pgConnection)
+	pgc.conn = c
+	pgc.process = new(postgresutils.PostgresProcess)
 
 	// connect to postgres
-	pgprocess, err := postgresutils.NewDB(host, port, dbname, user, password, "disable", pwdSections[0])
+	if err := pgc.blconnect(); err != nil {
+		return nil, err
+	}
+	return pgc, nil
+}
+
+func (c *pgConnection) blconnect() error {
+	credentials, err := c.getConnCredentials()
+	if err != nil {
+		return err
+	}
+	var pwc vconfig.VConfig
+	if err := pwc.FromString(credentials["SECURE PASSWORD"], ","); err != nil {
+		return err
+	}
+	pws, err := pwc.GetSectionsByName("SECURE PASSWORD")
+	pgprocess, err := postgresutils.NewDB(
+		credentials["host"],
+		credentials["port"],
+		credentials["dbname"],
+		credentials["user"],
+		credentials["password"],
+		"disable",
+		pws[0])
 	if err != nil {
 		return err
 	}
 
 	c.process = pgprocess
 
-	fmt.Println("PG:", c)
-
 	return nil
+}
+
+func (c *pgConnection) sqlconnect() error {
+	return nil
+}
+
+func (c *pgConnection) getConnCredentials() (map[string]string, error) {
+	credentials := make(map[string]string)
+	cfg, sec, _, err := c.getHostInfo()
+	if err != nil {
+		return nil, err
+	}
+
+	// get params for mysql connection
+	if host, err := sec.GetSingleValue("host", ""); err != nil {
+		return nil, err
+	} else {
+		credentials["host"] = host
+	}
+
+	if port, err := sec.GetSingleValue("port", ""); err != nil {
+		return nil, err
+	} else {
+		credentials["port"] = port
+	}
+
+	if dbname, err := sec.GetSingleValue("dbname", ""); err != nil {
+		return nil, err
+	} else {
+		credentials["dbname"] = dbname
+	}
+
+	if user, err := sec.GetSingleValue("user", ""); err != nil {
+		return nil, err
+	} else {
+		credentials["user"] = user
+	}
+
+	if password, err := sec.GetSingleValue("password", ""); err != nil {
+		return nil, err
+	} else {
+		credentials["password"] = password
+	}
+
+	if pwdSections, err := cfg.GetSections("SECURE PASSWORD"); err != nil {
+		return nil, err
+	} else {
+		credentials["SECURE PASSWORD"] = pwdSections[0].ToString()
+	}
+
+	return credentials, nil
 }
 
 func (c *pgConnection) disconnect() error {
@@ -91,14 +111,23 @@ func (c *pgConnection) disconnect() error {
 	return nil
 }
 
-func (c *pgConnection) getSourceInfo(schemas []string) ([]schema, error) {
+func (c *pgConnection) startDump(stop_d <-chan bool,
+	stopped_d chan<- bool,
+	stop_uri <-chan bool,
+	stopped_uri chan<- bool) (<-chan *structs.Event, error) {
 	return nil, nil
 }
 
-func (c *pgConnection) startDump() (<-chan interface{}, error) {
-	return nil, nil
+func (c *pgConnection) getFreqs() []int {
+	return c.freqs
 }
 
-func (c *pgConnection) playEvent(e interface{}) error {
+func (c *pgConnection) playEvent(e *structs.Event) error {
+	res, err := c.process.Run(e.Query)
+	fmt.Println(e.Query, res, err)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
