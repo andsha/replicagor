@@ -56,7 +56,7 @@ func NewMysqlConnection(c *conn) (*mysqlConnection, error) {
 
 func (c *mysqlConnection) blconnect() error {
 	// generate binlog process using rinfo
-	c.blprocess = mysqlconnection.NewProcess(c.rinfo, c.updateRinfo, c.sendNewTabInfo)
+	c.blprocess = mysqlconnection.NewProcess(c.rinfo, c.updateRinfo, c.sendNewTabInfo, c.logging)
 
 	credentials, err := c.getConnCredentials()
 	if err != nil {

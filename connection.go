@@ -8,6 +8,7 @@ import (
 
 	"github.com/andsha/replicagor/structs"
 	"github.com/andsha/vconfig"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -34,6 +35,7 @@ type connection interface {
 //generic connection data structure
 type conn struct {
 	//rep      *replicagor // parent
+	logging  *logrus.Logger
 	connType int              // type of connection
 	rconf    vconfig.VConfig  // replication config
 	sconf    vconfig.VConfig  // source config
@@ -42,11 +44,12 @@ type conn struct {
 }
 
 // Create conection object
-func NewConnection(conntype int, sconf vconfig.VConfig, rconf vconfig.VConfig) (connection, error) {
+func NewConnection(conntype int, sconf vconfig.VConfig, rconf vconfig.VConfig, logging *logrus.Logger) (connection, error) {
 	c := new(conn)
 	c.connType = conntype
 	c.rconf = rconf
 	c.sconf = sconf
+	c.logging = logging
 
 	_, _, hostType, err := c.getHostInfo()
 	if err != nil {

@@ -6,7 +6,9 @@ import (
 	//	"math/rand"
 	"errors"
 	"os"
-	"time"
+	"os/signal"
+	"syscall"
+	//	"time"
 
 	"github.com/andsha/replicagor/structs"
 	"github.com/andsha/vconfig"
@@ -47,17 +49,19 @@ func NewReplicagor(rconf vconfig.VConfig, sconf vconfig.VConfig, logging *logrus
 	r.logging = logging
 
 	r.logging.Infof("Initializing and connecting to source")
-	source, err := NewConnection(SOURCE, sconf, rconf)
+	source, err := NewConnection(SOURCE, sconf, rconf, logging)
 	if err != nil {
 		return nil, err
 	}
+	r.logging.Infof("Source connection is OK")
 	r.source = source
 
 	r.logging.Infof("Initializing and connecting to destination")
-	dest, err := NewConnection(DEST, sconf, rconf)
+	dest, err := NewConnection(DEST, sconf, rconf, logging)
 	if err != nil {
 		return nil, err
 	}
+	r.logging.Infof("Destination connection is OK")
 	r.dest = dest
 
 	return r, nil
@@ -66,20 +70,19 @@ func NewReplicagor(rconf vconfig.VConfig, sconf vconfig.VConfig, logging *logrus
 
 // run replication
 func (r *replicagor) Run() error {
-	// map: [channel to stop] : [channel is stopped, is buffer  routine]
 	stops := make(map[chan bool]structs.STOPCH)
 	// create goroutines
 	conts := make([]chan bool, 0)
 	events := make([]chan *structs.Event, 0)
 
-	bstops := make(map[chan bool]structs.STOPCH)
+	//bstops := make(map[chan bool]structs.STOPCH)
 	freqs := r.source.getFreqs()
-	for _ = range freqs {
+	for _, f := range freqs {
 		/* chan length shall be equal to number of buffers since
 		  killing loop in goroutine aways sends signal to all buffers
 		even the ones are already ended
 		*/
-		cont := make(chan bool, len(freqs))
+		cont := make(chan bool, 2)
 		conts = append(conts, cont)
 
 		event := make(chan *structs.Event, 500) // get channel length from config
@@ -87,9 +90,10 @@ func (r *replicagor) Run() error {
 
 		stop := make(chan bool, 1)
 		stopped := make(chan bool, 1)
+		name := fmt.Sprintf("Buffer with frequency %v", f)
 
-		stops[stop] = structs.STOPCH{Stopped: stopped, Isbuff: true}
-		bstops[stop] = structs.STOPCH{Stopped: stopped, Isbuff: true}
+		stops[stop] = structs.STOPCH{Name: name, Stopped: stopped, Isbuff: true, BufCont: cont}
+		//bstops[stop] = structs.STOPCH{Name: name, Stopped: stopped, Isbuff: true}
 		//fmt.Println("freq:", freqs[idf], stop, stopped)
 
 		go eventBuffer(cont, event, r.dest, stop, stopped)
@@ -98,22 +102,22 @@ func (r *replicagor) Run() error {
 	// control routine
 	stop_cr := make(chan bool, 1)
 	stopped_cr := make(chan bool, 1)
-	stops[stop_cr] = structs.STOPCH{Stopped: stopped_cr, Isbuff: false}
+	stops[stop_cr] = structs.STOPCH{Name: "Control", Stopped: stopped_cr, Isbuff: false}
 	//fmt.Println("control:", stop_cr, stopped_cr)
 
-	go controlRoutine(freqs, conts, stop_cr, stopped_cr, bstops)
+	go r.controlRoutine(freqs, conts, stop_cr, stopped_cr)
 	r.stops = stops
 
 	// start dump and get event channel
 	stop_d := make(chan bool, 1) // channel to stop binlog routine
 	stopped_d := make(chan bool, 1)
-	stops[stop_d] = structs.STOPCH{Stopped: stopped_d, Isbuff: false}
+	stops[stop_d] = structs.STOPCH{Name: "Binlog Dump", Stopped: stopped_d, Isbuff: false}
 
 	//fmt.Println("dump:", stop_d, stopped_d)
 
 	stop_uri := make(chan bool, 1) // channel to stop update rinfor routine
 	stopped_uri := make(chan bool, 1)
-	stops[stop_uri] = structs.STOPCH{Stopped: stopped_uri, Isbuff: false}
+	stops[stop_uri] = structs.STOPCH{Name: "Update rinfo", Stopped: stopped_uri, Isbuff: false}
 
 	//fmt.Println("uri:", stop_uri, stopped_uri)
 
@@ -125,20 +129,22 @@ func (r *replicagor) Run() error {
 
 	r.stops = stops
 
-	// main cycle
-	// to be moved to a separate routine
-	numes := 0
-	t1 := time.Now()
+	// termination channel
+	kill := make(chan os.Signal, 2)
+	signal.Notify(kill, os.Interrupt, syscall.SIGKILL, syscall.SIGINT, syscall.SIGTSTP, syscall.SIGTERM)
 
 	// listen for all stopped channels. Once receive stopped signal initiate stopAndExit (via stopchan)
 	stopchan := make(chan bool, 1)
 	go func() {
 		for {
-			for _, stopped := range r.stops {
+			for stop, stopped := range r.stops {
 				select {
-				case s := <-stopped.Stopped:
-					//fmt.Println("caught stop signal. Exit")
-					stopchan <- s
+				case <-stopped.Stopped:
+					r.logging.Infof("%v routine has stopped. Will stop replication", stopped.Name)
+					if !stopped.Isbuff {
+						delete(stops, stop)
+					}
+					stopchan <- true
 					return
 				default:
 				}
@@ -146,37 +152,63 @@ func (r *replicagor) Run() error {
 		}
 	}()
 
+	// main cycle
+	// to be moved to a separate routine
+
+	//numes := 0
+	//t1 := time.Now()
+
 	for {
 		select {
 		case <-stopchan: // if one of the routines stopped
 			//fmt.Println("stop received from chan")
 			r.stopAndExit()
 			return errors.New("Replicator exited due to stopped signal from goroutine")
+		case k := <-kill:
+			switch k {
+			case syscall.SIGKILL, syscall.SIGINT, syscall.SIGTSTP, syscall.SIGTERM:
+				r.logging.Info("Receive termination signal. Will stop replication")
+				r.stopAndExit()
+				return errors.New("Replication stopped due to a termination signal")
+			}
 		case event, ok := <-echan: // get source event or channel closure
 			if ok {
 				events[event.Buf] <- event
-				numes++
+				//numes++
 			} else { // when channel closed
-				fmt.Printf("done with %v events\n", numes)
+				//fmt.Printf("done with %v events\n", numes)
 			}
-			if numes >= 160000 {
-				fmt.Println(time.Now().Sub(t1).Nanoseconds()/1e6, "ms")
-			}
+			//			if numes >= 160000 {
+			//				fmt.Println(time.Now().Sub(t1).Nanoseconds()/1e6, "ms")
+			//			}
 		}
 
 	}
 	return nil
 }
 
-// stops all gorouines. waits for their execution. Disconnects from source and destination
+// Stops gorouines.
+// Stops all routines except buffers. Waits for stopped signal.
+// Disconnects from source and destination
 func (r *replicagor) stopAndExit() {
+	// first stop all non-buffer routines
 	for stop, stopped := range r.stops {
 		if !stopped.Isbuff {
-			//fmt.Println("closing", stop, stopped)
+			r.logging.Infof("Stopping routine %v", stopped.Name)
 			stop <- true
-			//fmt.Println("stop sent")
 			_, _ = <-stopped.Stopped
-			//fmt.Println("stopped received")
+			r.logging.Infof("Routine %v stopped", stopped.Name)
+		}
+	}
+	// then stop all buffer routines
+	for stop, stopped := range r.stops {
+		if stopped.Isbuff {
+			r.logging.Infof("Stopping routine %v", stopped.Name)
+			stop <- true
+			stopped.BufCont <- true // send to continue channel so that stop signal can be caught by the buffer
+			_, _ = <-stopped.Stopped
+			r.logging.Infof("Routine %v stopped", stopped.Name)
+
 		}
 	}
 
@@ -205,26 +237,32 @@ func eventBuffer(
 	for {
 		<-cont // wait for signal from control routine
 		select {
-		case e := <-event:
-			dest.playEvent(e)
 		case <-stop: // stop goroutine
-			//fmt.Println("buffer routine stopped")
 			stopped <- true
 			return
-		default: // if no event on channel, then skip
-			//time.Sleep(time.Second)
-			//fmt.Println("waiting for event", stop)
+		default: // select below is under default (not another case) since
+			// we want to catch stop signal with 100% certanty.
+			// if event below is another case case <-stop will be caught
+			// randomly and loop can be dead on waiting for an event
+			select {
+			case e := <-event:
+				dest.playEvent(e)
+
+			default: // if no event on channel, then skip
+				//time.Sleep(time.Second)
+				//fmt.Println("waiting for event", stop)
+			}
 		}
 	}
 }
 
 // control routine
-func controlRoutine(
+func (r *replicagor) controlRoutine(
 	freqs []int,
 	conts []chan bool,
 	stop <-chan bool,
 	stopped chan<- bool,
-	bstops map[chan bool]structs.STOPCH,
+	//	bstops map[chan bool]structs.STOPCH,
 ) {
 	fcounter := make([]int, len(freqs)-1) // 0th element is default
 	copy(fcounter, freqs[1:])             //exclude default buffer from fcounter
@@ -232,18 +270,6 @@ func controlRoutine(
 	for {
 		select {
 		case <-stop:
-			//fmt.Println("receive signal to stop control routne. Will stop buffer routines", stop, stopped)
-			for bstop, bstopped := range bstops {
-				//fmt.Printf("stopping buffer %v\n", bstop)
-				bstop <- true             // send stop signal to buffer
-				for _, c := range conts { // send cont signal to all buffers to play all still alive
-					c <- true
-				}
-				//fmt.Println("waiting for buffer to stop")
-				<-bstopped.Stopped
-				//fmt.Println("buffer stopped. Continue")
-			}
-			//fmt.Println("All buffers are stopped")
 			stopped <- true
 			return
 		default:
@@ -260,11 +286,13 @@ func controlRoutine(
 }
 
 func main() {
+	fmt.Println("Starting Replicagor. For commandline help type replicagor --help")
 	// read command line parameters
 	cmdflags := new(cmdFlags)
 	cmdflags.parseCmdFlags()
 
 	// init logging
+	fmt.Printf("Initializing logging into %v\n", cmdflags.logfile)
 	var logging = logrus.New()
 	logfile, err := os.OpenFile(cmdflags.logfile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
@@ -280,13 +308,14 @@ func main() {
 	}
 
 	// Crate instance of replicagor
-
+	logging.Infof("Getting info about resources from %v", cmdflags.rConfigFile)
 	rconf, err := vconfig.New(cmdflags.rConfigFile, ",")
 	if err != nil {
 		logging.Error(err)
 		return
 	}
 
+	logging.Infof("Getting info about source from %v", cmdflags.sConfigFile)
 	sconf, err := vconfig.New(cmdflags.sConfigFile, ",")
 	if err != nil {
 		logging.Error(err)
