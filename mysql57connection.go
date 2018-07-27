@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
+	//	"time"
 
 	"github.com/andsha/mysqlutils"
 	"github.com/andsha/replicagor/mysqlconnection"
@@ -52,6 +52,10 @@ func NewMysqlConnection(c *conn) (*mysqlConnection, error) {
 	}
 
 	return mysqlc, nil
+}
+
+func (c *mysqlConnection) GetSConfig() *vconfig.VConfig {
+	return &c.sconf
 }
 
 func (c *mysqlConnection) blconnect() error {
@@ -173,24 +177,54 @@ func (c *mysqlConnection) startDump(
 	stopped_d chan<- bool,
 	stop_uri <-chan bool,
 	stopped_uri chan<- bool) (<-chan *structs.Event, error) {
-	pos, filename, err := c.blprocess.GetMasterStatus()
 
-	// for 160k events:
-	//pos = 1585845
-	//filename = "mysql-bin.000006"
+	var file string
+	var pos uint32
+
+	blsource, err := c.sconf.GetSingleValue("binlog", "source", "")
+	if err != nil {
+		return nil, err
+	}
+
+	switch blsource {
+	case "config":
+		file, err = c.sconf.GetSingleValue("binlog", "file", "")
+		if err != nil {
+			return nil, err
+		}
+		spos, err := c.sconf.GetSingleValue("binlog", "position", "")
+		if err != nil {
+			return nil, err
+		}
+		if ipos, err := strconv.Atoi(spos); err != nil {
+			return nil, err
+		} else {
+			pos = uint32(ipos)
+		}
+	case "masterstatus":
+		pos, file, err = c.blprocess.GetMasterStatus()
+		if err != nil {
+			return nil, err
+		}
+
+	default:
+		return nil, errors.New("source variable in binlog section should be either config or masterstatus")
+	}
 
 	if err != nil {
 		return nil, err
 	}
 	serverId := uint32(2)
 
-	eventlog, err := c.blprocess.StartBinlogDump(pos, filename, serverId)
+	eventlog, err := c.blprocess.StartBinlogDump(pos, file, serverId)
 	if err != nil {
 		return nil, err
 	}
 	echan := eventlog.GetEventChan()
-	go eventlog.Start(stop_d, stopped_d)
+	go eventlog.Start(stop_d, stopped_d, pos)
 	go c.UpdateRinfo(stop_uri, stopped_uri)
+
+	c.logging.Infof("Binlogdump started from %v position in %v file", pos, file)
 
 	return echan, nil
 }
@@ -260,6 +294,12 @@ func (c *mysqlConnection) getDBInfo(schemas []string) ([]structs.Schema, error) 
 					c := new(structs.Column)
 					scol, _ := col[0].(string)
 					c.Name = scol
+					stype, _ := col[1].(string)
+					c.Type = stype
+					if c.Type[:4] == "enum" { // mysql type enum
+						c.Enum = strings.Split(strings.Replace(c.Type[5:len(c.Type)-1], "'", "", -1), ",")
+						//fmt.Println(c.Enum)
+					}
 					cstructs = append(cstructs, c)
 				}
 				t.Columns = cstructs
@@ -268,7 +308,6 @@ func (c *mysqlConnection) getDBInfo(schemas []string) ([]structs.Schema, error) 
 			sstruct.Tables = tstructs
 			sstructs = append(sstructs, *sstruct)
 		}
-
 	}
 
 	return sstructs, nil
@@ -313,6 +352,7 @@ func (c *mysqlConnection) initInfo() error {
 		return err
 	}
 	enableDeleteTablesMap, _ := m.(map[string]map[string]interface{})
+	//fmt.Println("1", enableDeleteTablesMap["db1"])
 
 	m, err = getCFGInfo(c.rconf, "excludedColumns", "columns")
 	if err != nil {
@@ -322,12 +362,15 @@ func (c *mysqlConnection) initInfo() error {
 
 	for idr := range rinfo {
 		schema := rinfo[idr]
+		//fmt.Println(schema.Name)
 		for idt, t := range schema.Tables {
+			//fmt.Println(t.Name)
 			if _, ok := excludedTablesMap[schema.Name][t.Name]; ok {
 				rinfo[idr].Tables[idt].ExcludedFromReplication = true
 			}
 			if _, ok := enableDeleteTablesMap[schema.Name][t.Name]; ok {
 				rinfo[idr].Tables[idt].EnableDelete = true
+				//fmt.Println(rinfo[idr].Tables[idt].Name)
 			}
 			for idc, c := range t.Columns {
 				if _, ok := excludedColumnsMap[schema.Name][t.Name][c.Name]; ok {
@@ -440,6 +483,10 @@ func (c *mysqlConnection) initInfo() error {
 }
 
 func (c *mysqlConnection) GetTableFromRinfo(schema string, table string) *structs.Table {
+	if len(schema) == 0 || len(table) == 0 {
+		return nil
+	}
+
 	for ids := range c.rinfo {
 		if c.rinfo[ids].Name == schema {
 			for idt := range c.rinfo[ids].Tables {
@@ -472,7 +519,7 @@ func (c *mysqlConnection) UpdateRinfo(stop <-chan bool, stopped chan<- bool) {
 			c.blprocess.SetRinfo(c.rinfo)
 			c.sendNewTabInfo <- t
 		default:
-			time.Sleep(time.Second * 1)
+			//time.Sleep(time.Second * 1)
 		}
 	}
 }
@@ -542,10 +589,12 @@ func getCFGSectionInfo(sec *vconfig.Section, varname string) (interface{}, error
 			v := strings.Split(val, ".")
 			schema := v[0]
 			table := v[1]
+			//fmt.Println(schema, table)
 			if _, ok := tm[schema]; ok {
 				tm[schema][table] = nil
 			} else {
 				tm[schema] = map[string]interface{}{}
+				tm[schema][table] = nil
 			}
 		}
 		m = tm
@@ -562,15 +611,21 @@ func getCFGSectionInfo(sec *vconfig.Section, varname string) (interface{}, error
 					tm[schema][table][column] = nil
 				} else {
 					tm[schema][table] = map[string]interface{}{}
+					tm[schema][table][column] = nil
 				}
 			} else {
 				tm[schema] = map[string]map[string]interface{}{}
+				tm[schema][table] = map[string]interface{}{}
+				tm[schema][table][column] = nil
+
 			}
 			m = tm
 		}
 	default:
 		return nil, errors.New(fmt.Sprintf("unknown structue of %v values in section %v", varname, sec))
 	}
+
+	//fmt.Println("2", m)
 	return m, nil
 
 }

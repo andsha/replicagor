@@ -2,8 +2,10 @@ package mysqlconnection
 
 import (
 	"bytes"
+	"encoding/binary"
+	//	"fmt"
 	"io"
-	"math/big"
+	//	"math/big"
 	"strconv"
 	"time"
 )
@@ -131,6 +133,66 @@ func (r *pack) readUint64(dest *uint64) error {
 	return nil
 }
 
+func (r *pack) readTimeStamp2() time.Time {
+	utime := make([]byte, 4) // always 4
+	_, _ = r.Read(utime)
+	t := time.Unix(int64(binary.BigEndian.Uint32(utime)), 0)
+	return t
+}
+
+func (r *pack) readDateTime2() time.Time {
+	utime := make([]byte, 5) // always 5
+	_, _ = r.Read(utime)
+	//fmt.Println("utime:", utime)
+	intPart := BFixedLengthInt(utime) - 0x8000000000
+
+	//	var frac int64 = 0
+
+	//	switch dec {
+	//	case 1, 2:
+	//		frac = int64(data[5]) * 10000
+	//	case 3, 4:
+	//		frac = int64(binary.BigEndian.Uint16(data[5:7])) * 100
+	//	case 5, 6:
+	//		frac = int64(BFixedLengthInt(data[5:8]))
+	//	}
+
+	//	if intPart == 0 {
+	//		return formatZeroTime(int(frac), int(dec)), n, nil
+	//	}
+
+	tmp := intPart << 24
+	//handle sign???
+	if tmp < 0 {
+		tmp = -tmp
+	}
+
+	// var secPart int64 = tmp % (1 << 24)
+	ymdhms := tmp >> 24
+
+	ymd := ymdhms >> 17
+	ym := ymd >> 5
+	hms := ymdhms % (1 << 17)
+
+	day := int(ymd % (1 << 5))
+	month := int(ym % 13)
+	year := int(ym / 13)
+
+	second := int(hms % (1 << 6))
+	minute := int((hms >> 6) % (1 << 6))
+	hour := int((hms >> 12))
+
+	return time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC)
+}
+
+func BFixedLengthInt(buf []byte) uint64 {
+	var num uint64 = 0
+	for i, b := range buf {
+		num |= uint64(b) << (uint(len(buf)-i-1) * 8)
+	}
+	return num
+}
+
 func (r *pack) readDateTime() time.Time {
 	length, _ := r.ReadByte()
 	var year uint16
@@ -200,7 +262,7 @@ func (r *pack) readTime() time.Duration {
 //got from https://github.com/whitesock/open-replicator toDecimal method
 // and https://github.com/jeremycole/mysql_binlog/blob/master/lib/mysql_binlog/binlog_field_parser.rb#L233
 //mysql.com have incorrect manual
-func (r *pack) readNewDecimal(precission, scale int) *big.Rat {
+func (r *pack) readNewDecimal(precission, scale int) string {
 	size := getDecimalBinarySize(precission, scale)
 
 	buff := r.Next(size)
@@ -251,9 +313,8 @@ func (r *pack) readNewDecimal(precission, scale int) *big.Rat {
 		value += decimalPack.readDecimalStringBySize(size)
 	}
 
-	rat, _ := new(big.Rat).SetString(value)
-
-	return rat
+	//rat, _ := new(big.Rat).SetString(value)
+	return value
 }
 
 func (r *pack) readDecimalStringBySize(size int) string {

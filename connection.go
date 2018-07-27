@@ -18,6 +18,7 @@ const (
 
 //connection interface
 type connection interface {
+	GetSConfig() *vconfig.VConfig
 	//implemented by both source and destination
 	blconnect() error
 	sqlconnect() error

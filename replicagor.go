@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 	//	"time"
+	"strconv"
 
 	"github.com/andsha/replicagor/structs"
 	"github.com/andsha/vconfig"
@@ -37,7 +38,7 @@ type replicagor struct {
 	source  connection                   // replication master (copy from)
 	dest    connection                   // replication slave (copy to)
 	stops   map[chan bool]structs.STOPCH // map of channels: key is channel to stop routine. value is whether the routine stopped
-
+	blinfos []structs.BinLogInfo         // slice with information about binlog positions for latest event in every buffer
 }
 
 // Create replicator object, initialize source & destination, and create replication info
@@ -75,9 +76,11 @@ func (r *replicagor) Run() error {
 	conts := make([]chan bool, 0)
 	events := make([]chan *structs.Event, 0)
 
-	//bstops := make(map[chan bool]structs.STOPCH)
+	// buffers
 	freqs := r.source.getFreqs()
-	for _, f := range freqs {
+	blinfos := make([]structs.BinLogInfo, len(freqs))
+	r.blinfos = blinfos
+	for idf, f := range freqs {
 		/* chan length shall be equal to number of buffers since
 		  killing loop in goroutine aways sends signal to all buffers
 		even the ones are already ended
@@ -88,15 +91,17 @@ func (r *replicagor) Run() error {
 		event := make(chan *structs.Event, 500) // get channel length from config
 		events = append(events, event)
 
+		//		bli := structs.BinLogInfo{Position: 0, File: ""}
+		//		blinfos = append(blinfos, bli)
+
 		stop := make(chan bool, 1)
 		stopped := make(chan bool, 1)
 		name := fmt.Sprintf("Buffer with frequency %v", f)
 
 		stops[stop] = structs.STOPCH{Name: name, Stopped: stopped, Isbuff: true, BufCont: cont}
-		//bstops[stop] = structs.STOPCH{Name: name, Stopped: stopped, Isbuff: true}
 		//fmt.Println("freq:", freqs[idf], stop, stopped)
 
-		go eventBuffer(cont, event, r.dest, stop, stopped)
+		go eventBuffer(idf, cont, event, r.dest, stop, stopped, blinfos)
 	}
 
 	// control routine
@@ -109,6 +114,7 @@ func (r *replicagor) Run() error {
 	r.stops = stops
 
 	// start dump and get event channel
+	r.logging.Info("Starting binlogdump")
 	stop_d := make(chan bool, 1) // channel to stop binlog routine
 	stopped_d := make(chan bool, 1)
 	stops[stop_d] = structs.STOPCH{Name: "Binlog Dump", Stopped: stopped_d, Isbuff: false}
@@ -123,11 +129,12 @@ func (r *replicagor) Run() error {
 
 	echan, err := r.source.startDump(stop_d, stopped_d, stop_uri, stopped_uri)
 	if err != nil {
+		r.logging.Errorf("Binlogdump cannot be started:%v Stopping replications", err)
+		delete(stops, stop_d)
+		delete(stops, stop_uri)
 		r.stopAndExit()
 		return err
 	}
-
-	r.stops = stops
 
 	// termination channel
 	kill := make(chan os.Signal, 2)
@@ -212,6 +219,42 @@ func (r *replicagor) stopAndExit() {
 		}
 	}
 
+	// finally write to sconfig latest valid binlog position and filename
+	//	fmt.Println(r.blinfos)
+
+	path, err := r.source.GetSConfig().GetSingleValue("File", "Path", "")
+	if err != nil {
+		r.logging.Error("Cannot save latest valid binlogposition: %v", err)
+		return
+	}
+
+	smallestPositon := r.blinfos[0].Position
+	fmt.Println("smallest:", smallestPositon)
+	for _, blinfo := range r.blinfos {
+		if smallestPositon < blinfo.Position && blinfo.Position != 0 {
+			smallestPositon = blinfo.Position
+		}
+	}
+
+	fmt.Println("position:", smallestPositon)
+	fmt.Println("file:", r.blinfos[0].File)
+
+	blsec, err := r.source.GetSConfig().GetSections("binlog")
+	if err != nil {
+		r.logging.Error("Cannot save latest valid binlogposition: %v", err)
+		return
+	}
+
+	if smallestPositon != 0 {
+		blsec[0].SetValues("position", []string{strconv.Itoa(int(smallestPositon))})
+		blsec[0].SetValues("file", []string{r.blinfos[0].File})
+	}
+
+	if err := r.source.GetSConfig().ToFile(path); err != nil {
+		r.logging.Errorf("Cannot save latest valid binlogposition: %v", err)
+		return
+	}
+
 	// disconect from source and destination
 
 }
@@ -228,12 +271,15 @@ Frequency of default buffer must be 1 (plays each time).
 // buffer routine for treating events
 // routine can only be stopped from control routine
 func eventBuffer(
+	idf int,
 	cont <-chan bool,
 	event <-chan *structs.Event,
 	dest connection,
 	stop <-chan bool,
 	stopped chan<- bool,
+	blinfos []structs.BinLogInfo,
 ) {
+	s := false
 	for {
 		<-cont // wait for signal from control routine
 		select {
@@ -246,8 +292,23 @@ func eventBuffer(
 			// randomly and loop can be dead on waiting for an event
 			select {
 			case e := <-event:
-				dest.playEvent(e)
+				if !s {
+					if err := dest.playEvent(e); err != nil {
+						//fmt.Println("error while running query trying to stop replicagor")
+						stopped <- true
+						// continue cycle so it continues receiving events
+						// and is killed from stop routine
+						s = true
+						//fmt.Println("buffer stopped")
+					} else {
+						if e.Position != 0 { // write position only if event has info about it
+							blinfos[idf].Position = e.Position // write event's binlog position and filename
+							blinfos[idf].File = e.File         // write event's binlog position and filename
+						}
+					}
+				}
 
+				//fmt.Println(idf, blinfos)
 			default: // if no event on channel, then skip
 				//time.Sleep(time.Second)
 				//fmt.Println("waiting for event", stop)
@@ -313,6 +374,7 @@ func main() {
 	if err != nil {
 		logging.Error(err)
 		return
+
 	}
 
 	logging.Infof("Getting info about source from %v", cmdflags.sConfigFile)
@@ -320,6 +382,13 @@ func main() {
 	if err != nil {
 		logging.Error(err)
 		return
+	}
+
+	if ss, _ := sconf.GetSectionsByName("File"); len(ss) == 0 {
+		fmt.Println("add file")
+		s := vconfig.NewSection("File", ",")
+		s.AddValues("Path", []string{cmdflags.sConfigFile})
+		sconf.AddSection(s)
 	}
 
 	myreplication, err := NewReplicagor(rconf, sconf, logging)

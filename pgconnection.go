@@ -3,9 +3,13 @@
 package main
 
 import (
+	//	"errors"
 	"fmt"
+	//	"strconv"
+	//	"time"
 
 	"github.com/andsha/postgresutils"
+	"github.com/andsha/replicagor/pgfuncs"
 	"github.com/andsha/replicagor/structs"
 	"github.com/andsha/vconfig"
 )
@@ -26,6 +30,10 @@ func NewPgConnection(c *conn) (*pgConnection, error) {
 		return nil, err
 	}
 	return pgc, nil
+}
+
+func (c *pgConnection) GetSConfig() *vconfig.VConfig {
+	return &c.sconf
 }
 
 func (c *pgConnection) blconnect() error {
@@ -107,7 +115,7 @@ func (c *pgConnection) getConnCredentials() (map[string]string, error) {
 }
 
 func (c *pgConnection) disconnect() error {
-	fmt.Println("disconnect from PSQL")
+	//fmt.Println("disconnect from PSQL")
 	return nil
 }
 
@@ -123,8 +131,23 @@ func (c *pgConnection) getFreqs() []int {
 }
 
 func (c *pgConnection) playEvent(e *structs.Event) error {
-	res, err := c.process.Run(e.Query)
-	fmt.Println(e.Query, res, err)
+	query := e.Query
+	if len(query) == 0 {
+		if q, err := pgfuncs.GenQuery(e); err != nil {
+			return err
+		} else {
+			query = q
+		}
+	} else {
+		if q, err := pgfuncs.ConvertMysql57ToPostgres(query, true); err != nil {
+			return err
+		} else {
+			query = q
+		}
+	}
+
+	res, err := c.process.Run(query)
+	fmt.Println(query, res, err)
 	if err != nil {
 		return err
 	}

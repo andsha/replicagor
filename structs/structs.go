@@ -25,6 +25,8 @@ type (
 
 	Column struct {
 		Name                    string
+		Type                    string
+		Enum                    []string
 		ExcludedFromReplication bool
 		IsPKey                  bool
 	}
@@ -35,10 +37,21 @@ type (
 		Columns    []*Column
 		EventType  byte
 		Query      string
-		Oldrec     Record
-		Newrec     Record
+		OldValues  [][]*QueryValues
+		NewValues  [][]*QueryValues
 		Buf        int
-		position   interface{}
+		Position   uint32 // binlig position
+		File       string // binlog file
+	}
+
+	BinLogInfo struct {
+		Position uint32 // binlig position
+		File     string // binlog file
+	}
+
+	QueryValues struct {
+		ColumnId int
+		Value    interface{}
 	}
 
 	Record struct {
