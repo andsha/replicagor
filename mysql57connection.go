@@ -208,7 +208,7 @@ func (c *mysqlConnection) startDump(
 		}
 
 	default:
-		return nil, errors.New("source variable in binlog section should be either config or masterstatus")
+		return nil, errors.New("source variable in binlog section of sconfig must be config or masterstatus")
 	}
 
 	if err != nil {
@@ -467,7 +467,8 @@ func (c *mysqlConnection) initInfo() error {
 	//		for _, t := range s.Tables {
 	//			fmt.Println(t.Name)
 	//			for _, c := range t.Columns {
-	//				fmt.Println(c.Name)
+	//				//fmt.Println(c.Name)
+	//				fmt.Println(c)
 	//			}
 	//		}
 	//	}

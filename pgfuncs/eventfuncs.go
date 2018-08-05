@@ -40,16 +40,21 @@ func GenQuery(event *structs.Event) (string, error) {
 			sql = sql[:len(sql)-2] + ") VALUES ("
 			for idv, val := range vgroup {
 				if val.Value != nil {
-					switch v := val.Value.(type) {
-					case time.Time:
-						sql = fmt.Sprintf("%v'%v-%v-%v %v:%v:%v', ", sql, v.Year(), v.Month(), v.Day(), v.Hour(), v.Minute(), v.Second())
-					default:
-						if sliceHasInt(enumidxs, idv) {
-							v, _ := strconv.ParseInt(fmt.Sprintf("%v", val.Value), 10, 16)
-							//fmt.Println(v)
-							sql = fmt.Sprintf("%v'%v', ", sql, event.Columns[idv].Enum[v-1])
-						} else {
-							sql = fmt.Sprintf("%v'%v', ", sql, val.Value)
+					//fmt.Println("excluded from replication:", event.Columns[idv].ExcludedFromReplication)
+					if event.Columns[idv].ExcludedFromReplication {
+						sql = fmt.Sprintf("%vNULL, ", sql)
+					} else {
+						switch v := val.Value.(type) {
+						case time.Time:
+							sql = fmt.Sprintf("%v'%v-%v-%v %v:%v:%v', ", sql, v.Year(), v.Month(), v.Day(), v.Hour(), v.Minute(), v.Second())
+						default:
+							if sliceHasInt(enumidxs, idv) {
+								v, _ := strconv.ParseInt(fmt.Sprintf("%v", val.Value), 10, 16)
+								//fmt.Println(v)
+								sql = fmt.Sprintf("%v'%v', ", sql, event.Columns[idv].Enum[v-1])
+							} else {
+								sql = fmt.Sprintf("%v'%v', ", sql, val.Value)
+							}
 						}
 					}
 				}
@@ -62,18 +67,22 @@ func GenQuery(event *structs.Event) (string, error) {
 
 			for idv, val := range vgroup {
 				if val.Value != nil {
-					switch v := val.Value.(type) {
-					case time.Time:
-						sql = fmt.Sprintf("%v%v = '%v-%v-%v %v:%v:%v', ", sql, event.Columns[val.ColumnId].Name, v.Year(), v.Month(), v.Day(), v.Hour(), v.Minute(), v.Second())
-					default:
-						var n interface{}
-						if event.Columns[val.ColumnId].Type[0:4] == "enum" {
-							t, _ := strconv.ParseInt(fmt.Sprintf("%v", val.Value), 10, 16)
-							n = event.Columns[idv].Enum[t-1]
-						} else {
-							n = val.Value
+					if event.Columns[val.ColumnId].ExcludedFromReplication {
+						sql = fmt.Sprintf("%v%v = NULL, ", sql, event.Columns[val.ColumnId].Name)
+					} else {
+						switch v := val.Value.(type) {
+						case time.Time:
+							sql = fmt.Sprintf("%v%v = '%v-%v-%v %v:%v:%v', ", sql, event.Columns[val.ColumnId].Name, v.Year(), v.Month(), v.Day(), v.Hour(), v.Minute(), v.Second())
+						default:
+							var n interface{}
+							if event.Columns[val.ColumnId].Type[0:4] == "enum" {
+								t, _ := strconv.ParseInt(fmt.Sprintf("%v", val.Value), 10, 16)
+								n = event.Columns[idv].Enum[t-1]
+							} else {
+								n = val.Value
+							}
+							sql = fmt.Sprintf("%v%v = '%v', ", sql, event.Columns[val.ColumnId].Name, n)
 						}
-						sql = fmt.Sprintf("%v%v = '%v', ", sql, event.Columns[val.ColumnId].Name, n)
 					}
 				}
 			}
