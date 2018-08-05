@@ -134,12 +134,14 @@ func (c *pgConnection) playEvent(e *structs.Event) error {
 	query := e.Query
 	if len(query) == 0 {
 		if q, err := pgfuncs.GenQuery(e); err != nil {
+			c.logging.Errorf("Error while generating query in postgres. ERROR: %v", err)
 			return err
 		} else {
 			query = q
 		}
 	} else {
-		if q, err := pgfuncs.ConvertMysql57ToPostgres(query, true); err != nil {
+		if q, err := pgfuncs.ConvertMysql57ToPostgres(query); err != nil {
+			c.logging.Errorf("Error while converting query %v to postgres. ERROR: %v", query, err)
 			return err
 		} else {
 			query = q
@@ -149,6 +151,7 @@ func (c *pgConnection) playEvent(e *structs.Event) error {
 	res, err := c.process.Run(query)
 	fmt.Println(query, res, err)
 	if err != nil {
+		c.logging.Errorf("Error while running query in postgres:%v ERROR: %v", query, err)
 		return err
 	}
 

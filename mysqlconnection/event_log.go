@@ -695,6 +695,7 @@ func (evlog *EventLog) Start(stop <-chan bool, stopped chan<- bool, startPos uin
 				return
 			}
 			//fmt.Printf("event type: %T\n", ec.Ev)
+			pos = evlog.lastRotatePosition
 
 			switch e := ec.Ev.(type) {
 			case *startEventV3Event: // ?
@@ -724,21 +725,24 @@ func (evlog *EventLog) Start(stop <-chan bool, stopped chan<- bool, startPos uin
 				event.File = evlog.lastRotateFileName
 				evlog.eventChan <- event
 			case *QueryEvent:
-				//fmt.Println("event:", e.GetQuery())
-				event := new(structs.Event)
-				q := e.GetQuery()
-				//fmt.Println("Query:'", q, "'", len(q))
-				if q != "BEGIN;" && q != "BEGIN" && q != " BEGIN" && q != " BEGIN;" {
-					//fmt.Println("update DBinfo", event.Query)
-					_ = evlog.mysqlConnection.UpdateDBinfo(e.schema, "")
-					q = fmt.Sprintf("SET SEARCH_PATH TO \"%v\"; %v", e.schema, q)
-					event.Position = pos
-					event.File = evlog.lastRotateFileName
+				for _, s := range evlog.mysqlConnection.rinfo {
+					if s.Name == e.schema {
+						event := new(structs.Event)
+						q := e.GetQuery()
+						//fmt.Println("Query:'", q, "'", len(q))
+						if q != "BEGIN;" && q != "BEGIN" && q != " BEGIN" && q != " BEGIN;" {
+							//fmt.Println("update DBinfo", event.Query)
+							_ = evlog.mysqlConnection.UpdateDBinfo(e.schema, "")
+							q = fmt.Sprintf("SET SEARCH_PATH TO \"%v\"; %v", e.schema, q)
+							event.Position = pos
+							event.File = evlog.lastRotateFileName
+						}
+						event.Query = q
+						evlog.eventChan <- event
+					}
 				}
-				event.Query = q
-				evlog.eventChan <- event
-
 			case *TableMapEvent:
+				fmt.Println("TableMapEvent. Schema:", e.SchemaName, "Table:", e.TableName)
 				//fmt.Println("2")
 				evlog.lastTableMapEvent = e
 				replicateEv = false
@@ -746,7 +750,7 @@ func (evlog *EventLog) Start(stop <-chan bool, stopped chan<- bool, startPos uin
 				columns = nil
 
 				for _, s := range evlog.mysqlConnection.rinfo {
-					//fmt.Println("e:", e.SchemaName, "s:", s.Name)
+					//fmt.Println("TableMapEvent:", e.SchemaName, "s:", s.Name)
 					if e.SchemaName == s.Name {
 						buffer = s.Buf
 						replicateEv = true
@@ -828,7 +832,7 @@ func (evlog *EventLog) Start(stop <-chan bool, stopped chan<- bool, startPos uin
 				//fmt.Println("4")
 			}
 			//fmt.Println("5")
-			pos = evlog.lastRotatePosition // current position is next read position
+			//pos = evlog.lastRotatePosition // current position is next read position
 			listencont <- true
 		default:
 		}

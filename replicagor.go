@@ -10,6 +10,7 @@ import (
 	"syscall"
 	//	"time"
 	"strconv"
+	"strings"
 
 	"github.com/andsha/replicagor/structs"
 	"github.com/andsha/vconfig"
@@ -220,24 +221,30 @@ func (r *replicagor) stopAndExit() {
 	}
 
 	// finally write to sconfig latest valid binlog position and filename
-	//	fmt.Println(r.blinfos)
 
-	path, err := r.source.GetSConfig().GetSingleValue("File", "Path", "")
+	s, err := r.source.GetSConfig().GetSingleValue("binlog", "position", "")
 	if err != nil {
-		r.logging.Error("Cannot save latest valid binlogposition: %v", err)
+		r.logging.Error(err)
+		return
+	}
+	oldpos, _ := strconv.Atoi(s)
+
+	oldfile, err := r.source.GetSConfig().GetSingleValue("binlog", "file", "")
+	if err != nil {
+		r.logging.Error(err)
 		return
 	}
 
-	smallestPositon := r.blinfos[0].Position
-	fmt.Println("smallest:", smallestPositon)
-	for _, blinfo := range r.blinfos {
-		if smallestPositon < blinfo.Position && blinfo.Position != 0 {
-			smallestPositon = blinfo.Position
-		}
+	path, err := r.source.GetSConfig().GetSingleValue("File", "Path", "")
+	if err != nil {
+		r.logging.Error(err)
+		return
 	}
 
-	fmt.Println("position:", smallestPositon)
-	fmt.Println("file:", r.blinfos[0].File)
+	pos, file := getsmallestPosition(r.blinfos, uint32(oldpos), oldfile)
+
+	fmt.Println("position:", pos)
+	fmt.Println("file:", file)
 
 	blsec, err := r.source.GetSConfig().GetSections("binlog")
 	if err != nil {
@@ -245,18 +252,59 @@ func (r *replicagor) stopAndExit() {
 		return
 	}
 
-	if smallestPositon != 0 {
-		blsec[0].SetValues("position", []string{strconv.Itoa(int(smallestPositon))})
-		blsec[0].SetValues("file", []string{r.blinfos[0].File})
-	}
+	blsec[0].SetValues("position", []string{fmt.Sprintf("%v", pos)})
+	blsec[0].SetValues("file", []string{file})
 
 	if err := r.source.GetSConfig().ToFile(path); err != nil {
 		r.logging.Errorf("Cannot save latest valid binlogposition: %v", err)
 		return
 	}
 
+	r.logging.Infof("Exited at %v binlogposition in %v", pos, file)
+
 	// disconect from source and destination
 
+}
+
+func getsmallestPosition(blinfos []structs.BinLogInfo, defpos uint32, deffile string) (uint32, string) {
+	smallestPositon := blinfos[0].Position
+	smallestFile := blinfos[0].File
+
+	var smallestFileNumber int
+
+	if smallestFile == "" {
+		smallestFileNumber = -1
+	} else {
+		smallestFileNumber, _ = strconv.Atoi(strings.Trim(strings.Split(smallestFile, ".")[1], "0"))
+	}
+
+	var pos uint32
+	var fileNumber int
+	var file string
+
+	for _, blinfo := range blinfos {
+		pos = blinfo.Position
+		file = blinfo.File
+
+		if file == "" {
+			fileNumber = -1
+		} else {
+			fileNumber, _ = strconv.Atoi(strings.Trim(strings.Split(blinfo.File, ".")[1], "0"))
+		}
+
+		if (fileNumber < smallestFileNumber && fileNumber != -1) ||
+			(fileNumber == smallestFileNumber && pos < smallestPositon && fileNumber != -1) ||
+			(smallestFileNumber == -1 && fileNumber != -1) {
+			smallestPositon = pos
+			smallestFile = file
+			smallestFileNumber = fileNumber
+		}
+	}
+
+	if smallestPositon == 0 && smallestFile == "" {
+		return uint32(defpos), deffile
+	}
+	return smallestPositon, smallestFile
 }
 
 /*   buffer numbers shall be integers starting from 0 in increasing order

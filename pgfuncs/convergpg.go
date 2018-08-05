@@ -11,7 +11,8 @@ import (
 var sysWords []string
 
 func init() {
-	sysWords = []string{"select", "from", "where", "group", "sort", "left", "join", "by", "rigth", ",", ")", "(", "sum", "if", "as", "and", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", " ", "\n", "<", "=", ">", "in", "count", ";", "when", "then", "else", "end", "distinct", "-", "extract", "date", "*", "on", ".", "date_trunc", "table", "create", "primary", "key", "index",
+	sysWords = []string{"select", "from", "where", "group", "sort", "left", "join", "by", "rigth", ",", ")", "(", "sum", "if", "as", "and", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", " ", "\n", "<", "=", ">", "in", "count",
+		";", "when", "then", "else", "end", "distinct", "-", "extract", "date", "*", "on", ".", "date_trunc", "table", "create", "primary", "key", "index",
 		"decimal", "varchar", "integer", "bigint", "timestamp", "int", "not", "schema", "set", "default", "null", "to", "insert", "into", "current_timestamp", "values", "now", "alter", "add",
 		"unique", "type", "text", "drop", "exists", "delete", "column", "update", "is", "ifnull", "coalesce", "least", "greatest", "or", "like", "including", "all", "first", "constraint", "rename", "procedure",
 		"localtimestamp", "smallint", "char", "/*", "*/", "temporary", "desc", "using", ":", "tablespace", "modify", "view", "/", "replace", "case", "lower", "trim", "regexp_replace", "round", "||", "begin", "commit"}
@@ -151,20 +152,24 @@ func getReplaces() [][]string {
 	return replaces
 }
 
-func ConvertMysql57ToPostgres(mysqlscript string, tablespace bool) (string, error) {
+func ConvertMysql57ToPostgres(mysqlscript string) (string, error) {
 	updateId := `0`
 	//updateId = strings.Split(strings.Split(mysqlscript, `_`)[1], `.`)[0]
 
-	mysqlscript = regexp.MustCompile(`(?i)alter table\s{1,}([^\s/(]*)`).ReplaceAllString(mysqlscript, ` \n alter table $1 \n`)
-	mysqlscript = regexp.MustCompile(`(?i)create table\s{1,}([^\s/(]*)`).ReplaceAllString(mysqlscript, ` \n create table $1 \n`)
-	mysqlscript = regexp.MustCompile(`(?i)[^drop ]primary key`).ReplaceAllString(mysqlscript, ` \n primary key`)
-	mysqlscript = regexp.MustCompile(`(?i)(add)?\s+unique (key|index)`).ReplaceAllString(mysqlscript, ` \n unique key`)
-	mysqlscript = regexp.MustCompile(`(?i)[^primary|unique|add] key `).ReplaceAllString(mysqlscript, ` \n key `)
-	mysqlscript = regexp.MustCompile(`(?i)[^ADD|DROP|CREATE] index `).ReplaceAllString(mysqlscript, ` \n index `)
-	if !strings.HasPrefix(strings.ToLower(mysqlscript), `add`) {
-		mysqlscript = regexp.MustCompile(`\)\s{0,5}\)$`).ReplaceAllString(mysqlscript, ` )\n)\n`)
+	mysqlscript = regexp.MustCompile(`(?i)alter table\s{1,}([^\s/(]*)`).ReplaceAllString(mysqlscript, " \n alter table $1 \n")
+	mysqlscript = regexp.MustCompile(`(?i)create table\s{1,}([^\s/(]*)`).ReplaceAllString(mysqlscript, " \n create table $1 \n")
+	mysqlscript = regexp.MustCompile(`(?i)[^drop ]primary key`).ReplaceAllString(mysqlscript, " \n primary key")
+	mysqlscript = regexp.MustCompile(`(?i)(add)?\s+unique (key|index)`).ReplaceAllString(mysqlscript, " \n unique key")
+	mysqlscript = regexp.MustCompile(`(?i)[^primary|unique|add] key `).ReplaceAllString(mysqlscript, " \n key ")
+	mysqlscript = regexp.MustCompile(`(?i)[^ADD|DROP|CREATE] index `).ReplaceAllString(mysqlscript, " \n index ")
+	if !strings.HasPrefix(strings.ToLower(mysqlscript), "add") {
+		mysqlscript = regexp.MustCompile(`\)\s{0,5}\)$`).ReplaceAllString(mysqlscript, " )\n)\n")
 	}
-	mysqlscripts := strings.Split(mysqlscript, `\n`)
+	mysqlscripts := strings.Split(mysqlscript, "\n")
+
+	for ide, e := range mysqlscripts {
+		fmt.Println(ide, ":", e)
+	}
 
 	indexre := regexp.MustCompile(`.*(\s|^)(index|key)[\s\(]+.*`)    // check for lower case
 	pkeyre := regexp.MustCompile(`.*(\s|^)primary\s+key([\s\(]+).*`) // check for lower case
@@ -192,44 +197,51 @@ func ConvertMysql57ToPostgres(mysqlscript string, tablespace bool) (string, erro
 		}
 
 		if strings.Contains(lmysqls, `set search_path`) {
-			database = strings.Replace(strings.Split(strings.Trim(lmysqls, ` `), ` `)[3], `;`, ``, -1)
+			database = strings.Replace(strings.Split(strings.Trim(lmysqls, " "), " ")[3], ";", "", -1)
 		}
 
 		if strings.Contains(lmysqls, `alter table`) || strings.Contains(lmysqls, `create table`) {
-			table = strings.Split(strings.Trim(lmysqls, ` `), ` `)[2]
-			table = strings.Split(table, `(`)[0]
-			if strings.Contains(table, `.`) {
-				ts := strings.Split(table, `.`)
+			fmt.Println("**************************************** 1 ", lmysqls)
+			table = strings.Split(strings.Trim(mysqls, " "), " ")[2]
+			fmt.Println("2", table)
+			table = strings.Split(table, "(")[0]
+			fmt.Println("3", table)
+			if strings.Contains(table, ".") {
+				ts := strings.Split(table, ".")
 				database = ts[0]
 				table = ts[1]
 			}
-			table = strings.Replace(table, "`", ``, -1)
+			table = strings.Replace(table, "`", "", -1)
+			fmt.Println("4", table)
 		}
-
+		//fmt.Println("1:", mysqls)
 		if !strings.HasPrefix(mysqls, `--`) && !strings.HasPrefix(mysqls, `#`) {
 			if indexre.MatchString(lmysqls) && !pkeyre.MatchString(lmysqls) {
 				if len(indexre.FindAllString(lmysqls, -1)) > 1 {
 					return "", errors.New(`Looks like we have several index statements in one line. Please make one line per index`)
 				}
-				if i, err := getIndex(table, mysqls, database, tablespace); err != nil {
+				fmt.Println("5", table)
+				if i, err := getIndex(table, mysqls, database); err != nil {
 					return "", err
 				} else {
 					indexes += i
 				}
 			} else if strings.Contains(lmysqls, `drop primary key`) {
-				if i, err := getIndex(table, mysqls, database, tablespace); err != nil {
+				if i, err := getIndex(table, mysqls, database); err != nil {
 					return "", err
 				} else {
 					scripts += i
 				}
-			} else if strings.Contains(lmysqls, `primary key`) {
+			} else if strings.Contains(lmysqls, "primary key") {
 				pkey = getPKey(table, mysqls)
-				mysqls = strings.Replace(mysqls, pkey, ``, -1)
-				scripts += strings.Replace(mysqls, `\n`, ` `, -1) + ` `
+				//fmt.Println("getpkey:", pkey, "\n")
+				mysqls = strings.Replace(mysqls, pkey, "", -1)
+				scripts += strings.Replace(mysqls, "\n", " ", -1) + " "
 			} else {
-				scripts += strings.Replace(mysqls, `\n`, ` `, -1) + ` `
+				scripts += strings.Replace(mysqls, "\n", " ", -1) + " "
 			}
 		}
+		//mt.Println("2:", scripts)
 
 	}
 
@@ -255,18 +267,12 @@ func ConvertMysql57ToPostgres(mysqlscript string, tablespace bool) (string, erro
 
 	//mysqls += `\n` + indexes + `\nupdate replication.upgrades set tbl='` + database + `.` + table + `' where ` + `"upgradeId"` + `=` + updateId + `;`
 	if len(indexes) != 0 {
-		mysqls += `\n` + indexes + `;`
+		mysqls += "\n" + indexes + ";"
 	}
 	//fmt.Println("m", mysqls)
 
-	//fmt.Println(mysqls)
-	//fmt.Println(pkey)
-	if len(pkey) != 0 { // do something about tablespace
-		mysqls += fmt.Sprintf(`\nALTER INDEX %v SET TABLESPACE index_tablespace`, pkey)
-	}
-
-	//fmt.Println(mysqls)
-	//fmt.Println(pkey)
+	fmt.Println("mysqls:", mysqls, "\n")
+	fmt.Println("pkey:", pkey, "\n")
 
 	for _, r := range getReplaces() {
 		//fmt.Println("replaces:", r)
@@ -301,7 +307,7 @@ func ConvertMysql57ToPostgres(mysqlscript string, tablespace bool) (string, erro
 
 	var res string
 	for _, word := range getWords(mysqls) {
-		//fmt.Println("word:", word, len(word))
+		//fmt.Println("word:", word)
 		_, err := strconv.ParseFloat(word, 64)
 		if strSliceHasItem(sysWords, strings.ToLower(word)) ||
 			len(strings.Trim(word, " ")) == 0 ||
@@ -315,7 +321,8 @@ func ConvertMysql57ToPostgres(mysqlscript string, tablespace bool) (string, erro
 		}
 	}
 
-	return strings.Replace(res, `\n`, "\n", -1), nil
+	//return strings.Replace(res, `\n`, "\n", -1), nil
+	return res, nil
 }
 
 func strSliceHasItem(slice []string, s string) bool {
@@ -327,7 +334,7 @@ func strSliceHasItem(slice []string, s string) bool {
 	return false
 }
 
-func getIndex(table, mysqls, database string, tablespace bool) (string, error) {
+func getIndex(table, mysqls, database string) (string, error) {
 	mysqls = strings.Trim(mysqls, " ")
 	smysqls := strings.ToLower(mysqls)
 
@@ -350,27 +357,25 @@ func getIndex(table, mysqls, database string, tablespace bool) (string, error) {
 	}
 
 	if strings.Contains(smysqls, "create index") {
-		if tablespace {
-			return mysqls + "TABLESPACE index_tablespace;", nil
-		} else {
-			return mysqls + ";", nil
-		}
+		return mysqls + ";", nil
 	}
 
-	indexre := regexp.MustCompile(`(\s|^)(unique\s)?(index|key)(\s+([^\(\)\s]+))?\s*(on\s+([a-zA-Z_0-9]*))?\((.*)\s*\)`)
+	indexre := regexp.MustCompile(`(?i)(\s|^)(unique\s)?(index|key)(\s+([^\(\)\s]+))?\s*(on\s+([a-zA-Z_0-9]*))?\((.*)\s*\)`)
 	idxmatch := indexre.FindStringSubmatch(mysqls)
 
 	if idxmatch == nil {
 		return "", errors.New("index definition not found")
 	}
 
+	//fmt.Println("group7:", idxmatch[7], len(idxmatch[7]))
 	idxname := idxmatch[5]
-	if len(idxmatch) >= 8 {
+	if len(idxmatch[7]) != 0 {
 		table = idxmatch[7]
 	}
 	fields := idxmatch[8]
-	fields = regexp.MustCompile("(?i`)").ReplaceAllString(fields, `"`)
-	fields = regexp.MustCompile(`(?i)("?[a-zA-Z0-9_]+"?)\((\d*)\)`).ReplaceAllString(mysqls, `left($1,$2)`)
+	fmt.Println("fields:", fields)
+	fields = regexp.MustCompile("(?i)`").ReplaceAllString(fields, "\"")
+	fields = regexp.MustCompile(`(?i)("?[a-zA-Z0-9_]+"?)\((\d*)\)`).ReplaceAllString(fields, `left($1,$2)`)
 	if len(idxname) == 0 {
 		idxname = table
 		for _, field := range strings.Split(fields, ",") {
@@ -384,15 +389,19 @@ func getIndex(table, mysqls, database string, tablespace bool) (string, error) {
 		idxname = idxname[len(idxname)-64:]
 	}
 
-	sql := fmt.Sprintf(`CREATE INDEX %v ON %v.%v (%v)`, idxname, database, table, fields)
-	if tablespace {
-		return sql + " TABLESPACE index_tablespace;", nil
-	} else {
-		return sql + ";", nil
-	}
+	sql := fmt.Sprintf("CREATE INDEX %v ON %v.%v (%v)", idxname, database, table, fields)
+	fmt.Println("idxname:", idxname)
+	fmt.Println("database:", database)
+	fmt.Println("table:", table)
+	fmt.Println("fields:", fields)
+	fmt.Println("getIndex:", sql)
+	return sql + ";", nil
+
 }
 
 func getPKey(table, mysqls string) string {
+	fmt.Println("mysqls in pkey:", mysqls, "\n")
+
 	mysqls = strings.Trim(mysqls, " ")
 	mysqls = strings.Replace(strings.Replace(mysqls, "(", " $", -1), ")", "$", -1)
 
@@ -416,21 +425,21 @@ func getPKey(table, mysqls string) string {
 
 func getWords(mysqls string) []string {
 	var res []string
-	separators := []string{",", " ", "(", ")", "\n", ";", ">", "<", "=", ".", `"`, ":", "*", "||", "'"}
+	separators := []string{",", " ", "(", ")", "\n", ";", ">", "<", "=", ".", "\"", ":", "*", "||", "'"}
 	var word string
 	check_quot := 0
 	for _, s := range mysqls {
 		sym := string(s)
 		if strSliceHasItem(separators, sym) {
-			if check_quot == 0 || sym == "'" || sym == `"` {
-				if (sym == "'" || sym == `"`) && check_quot == 0 {
+			if check_quot == 0 || sym == "'" || sym == "\"" {
+				if (sym == "'" || sym == "\"") && check_quot == 0 {
 					check_quot = 1
 					res = append(res, word)
 					word = sym
 					continue
 				}
 
-				if (sym == "'" || sym == `"`) && check_quot == 1 {
+				if (sym == "'" || sym == "\"") && check_quot == 1 {
 					check_quot = 0
 					word += sym
 					continue

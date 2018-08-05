@@ -341,13 +341,14 @@ func (c *mysqlConnection) initInfo() error {
 	rinfo := make([]structs.Schema, len(sinfo))
 	copy(rinfo, sinfo)
 
-	m, err := getCFGInfo(c.rconf, "excludedTables", "tables")
-	if err != nil {
-		return err
+	excludedTablesMap := make(map[string]map[string]interface{})
+	if m, err := getCFGInfo(c.rconf, "excludedTables", "tables"); err == nil {
+		excludedTablesMap, _ = m.(map[string]map[string]interface{})
 	}
-	excludedTablesMap, _ := m.(map[string]map[string]interface{})
 
-	m, err = getCFGInfo(c.rconf, "enableDelete", "tables")
+	//excludedTablesMap, _ := m.(map[string]map[string]interface{})
+
+	m, err := getCFGInfo(c.rconf, "enableDelete", "tables")
 	if err != nil {
 		return err
 	}
@@ -458,6 +459,8 @@ func (c *mysqlConnection) initInfo() error {
 	}
 
 	c.rinfo = rinfo
+
+	printRinfo(rinfo)
 
 	//	for _, s := range rinfo {
 	//		fmt.Println(s.Name)
@@ -641,4 +644,16 @@ func sintappend(sslice [][]int, aslice []int, pos int) [][]int {
 	}
 	sslice = append(sslice, aslice)
 	return sslice
+}
+
+func printRinfo(rinfo []structs.Schema) {
+	for _, schema := range rinfo {
+		fmt.Printf("Schema name:%v, buf:%v, freq: %v\n", schema.Name, schema.Buf, schema.Freq)
+		for _, table := range schema.Tables {
+			fmt.Printf("    Table name: %v, excluded: %v, delete:%v, buf: %v, freq: %v", table.Name, table.ExcludedFromReplication, table.EnableDelete, table.Buf, table.Freq)
+			for _, column := range table.Columns {
+				fmt.Printf("        Column name: %v, enum: %v, excluded: %v, isPkey: %v, type: %v", column.Name, column.Enum, column.ExcludedFromReplication, column.IsPKey, column.Type)
+			}
+		}
+	}
 }

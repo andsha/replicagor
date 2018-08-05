@@ -1,6 +1,12 @@
+.gitignore
 rconfig.conf
 sconfig.conf
 Docs.pptx
 Presentation1.pptx
 replicationMysqlTest.sql
 tab1_100e.sql
+Archive-1/
+convertScriptAndApply.py
+my.txt
+postgresReplicationTest.py
+
